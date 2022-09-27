@@ -25,6 +25,8 @@ from ot.datasets import make_1D_gauss as gauss
 
 #%% parameters
 
+# import pdb; pdb.set_trace() WE DON'T COME HERE
+
 n = 2  # nb bins
 
 # bin positions

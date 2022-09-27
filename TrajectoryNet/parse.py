@@ -96,6 +96,10 @@ parser.add_argument(
     "--interp_reg", type=float, default=None, help="regularize interpolation"
 )
 
+parser.add_argument(
+    "--trp_reg", type=float, default=None, help="regularize trp"
+)
+
 parser.add_argument("--save", type=str, default="../results/tmp")
 parser.add_argument("--save_freq", type=int, default=1000)
 parser.add_argument("--viz_freq", type=int, default=100)

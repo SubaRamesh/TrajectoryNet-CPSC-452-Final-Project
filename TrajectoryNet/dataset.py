@@ -437,6 +437,7 @@ class CircleTestDataV3(EBData):
         next2d = np.array([np.cos(theta + 0.3), np.sin(theta + 0.3)]).T * r
         # next2d += np.random.randn(*next2d.shape) * self.r3
         self.velocity = next2d - x2d
+        import pdb; pdb.set_trace()
 
     def base_density(self):
         def logprob(z):
@@ -811,6 +812,7 @@ class CycleDataset(TreeTestData):
             theta = sample_uniform[:, 0] * 2 * np.pi
             r = (sample[:, 0] * self.r_std + 1)[:, None]
             s = torch.stack([torch.cos(theta), torch.sin(theta)], 1) * r
+            import pdb; pdb.set_trace()
             return s
 
         return f
@@ -875,6 +877,19 @@ class SklearnData(SCData):
         return standard_normal_logprob
 
     def base_sample(self):
+        def f(N, sigma):
+            xvals = np.random.uniform(-1, 3, N)
+
+            mean = 0
+            noise = np.random.normal(mean, sigma, N)
+
+            yvals = [(x**2) for x in xvals]
+
+            for i in range(len(yvals)):
+                yvals[i] += noise[i]
+            return torch.tensor([list(z) for z in zip(xvals, yvals)], dtype=torch.float32)
+
+            import pdb; pdb.set_trace()
         return torch.randn
 
     def sample_index(self, n, label_subset):

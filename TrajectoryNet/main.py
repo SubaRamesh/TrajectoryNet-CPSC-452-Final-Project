@@ -3,9 +3,11 @@
 Learns ODE from scrna data
 
 """
+from dataclasses import replace
 import os
 import matplotlib
 import matplotlib.pyplot as plt
+from TrajectoryNet.eval import integrate_backwards
 import numpy as np
 import time
 
@@ -100,6 +102,7 @@ def compute_loss(device, args, model, growth_model, logger, full_data):
     zs = []
     z = None
     interp_loss = 0.0
+    trp_loss = 0.0
     for i, (itp, tp) in enumerate(zip(args.int_tps[::-1], args.timepoints[::-1])):
         # tp counts down from last
         integration_times = torch.tensor([itp - args.time_scale, itp])
@@ -124,7 +127,8 @@ def compute_loss(device, args, model, growth_model, logger, full_data):
 
         # Straightline regularization
         # Integrate to random point at time t and assert close to (1 - t) * end + t * start
-        if args.interp_reg:
+        if args.interp_reg: 
+            # import pdb; pdb.set_trace()
             t = np.random.rand()
             int_t = torch.tensor([itp - t * args.time_scale, itp])
             int_t = int_t.type(torch.float32).to(device)
@@ -132,6 +136,46 @@ def compute_loss(device, args, model, growth_model, logger, full_data):
             int_x = int_x.detach()
             actual_int_x = x * (1 - t) + z * t
             interp_loss += F.mse_loss(int_x, actual_int_x)
+        
+        if args.trp_reg:
+            #add TRP loss
+            # randomly sample time steps
+            npoints = 1000
+            alpha = 0.5
+
+            t_ = [tp, np.random.rand() * args.time_scale, np.random.rand() * args.time_scale, itp]
+            all_pred_x = torch.zeros(len(t_), npoints, 2)
+
+            for i in range(len(t_)):
+                pred_x = model(x, integration_times = t_[i])
+                all_pred_x[i] = pred_x
+            # # fit polynomial f(t) to points y(timesteps)
+            # import pdb; pdb.set_trace()
+
+            test_t = np.random.rand() * args.time_scale
+            noisy_x = torch.from_numpy(x.clone().detach().numpy() + np.random.randn(*x.shape) * 0.01).type(torch.float32)
+            test_x = model(noisy_x, integration_times = test_t)
+
+            # pick random 
+            # i = np.floor(np.random.rand() * npoints)
+            
+            for i in range(npoints):
+                sample = [all_pred_x[j][i].detach().numpy() for j in range(len(t_))]
+                fit_p = np.polyfit(t_, sample, 3)
+                func_p0 = np.poly1d(fit_p.T[0])
+                func_p1 = np.poly1d(fit_p.T[1])
+                    
+                pred = np.array([func_p0(test_t), func_p1(test_t)])
+
+                trp_loss += alpha * F.mse_loss(torch.tensor(pred), torch.tensor(test_x[i]))
+
+            # import pdb; pdb.set_trace()
+            # fit_p = np.poly1d(np.polyfit(rand_t.detach().numpy(), pred_x.detach().numpy(), 4))
+            # # Lp = MSE(f`(timesteps) , y(timesteps))
+            #/ npoints
+
+
+
     if args.interp_reg:
         print("interp_loss", interp_loss)
 
@@ -159,7 +203,10 @@ def compute_loss(device, args, model, growth_model, logger, full_data):
     weights = torch.ones_like(losses).to(logpx)
     if args.leaveout_timepoint >= 0:
         weights[args.leaveout_timepoint] = 0
+
     losses = torch.mean(losses * weights)
+
+
 
     # Direction regularization
     if args.vecint:
@@ -180,6 +227,68 @@ def compute_loss(device, args, model, growth_model, logger, full_data):
                 similarity_loss -= torch.mean(F.cosine_similarity(direction, v))
         logger.info(similarity_loss)
         losses += similarity_loss * args.vecint
+
+    if args.vecint:
+        agg_loss = 0
+        for i, (itp, tp) in enumerate(zip(args.int_tps, args.timepoints)):
+            itp = torch.tensor(itp).type(torch.float32).to(device)
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            x += torch.randn_like(x) * 0.1
+
+            
+            idxf = args.data.sample_index(args.batch_size, itp)
+            xf = args.data.get_data()[idxf]
+            xf = torch.from_numpy(xf).type(torch.float32).to(device)
+            xf += torch.randn_like(xf) * 0.1
+            # Only penalizes at the time / place of visible samples
+            v1 = -model.chain[0].odefunc.odefunc.diffeq(itp, x)
+
+            agg_loss += F.mse_loss(xf)
+        losses += similarity_loss * args.vecint
+
+    if True:
+        # was slower at the beginning if end position same as k-neighbors, better than no reg, about same as density reg?
+        # really bad with same direction reg
+        density_loss = 0
+        tp_z_map = dict(zip(args.timepoints[:-1], zs[::-1]))
+
+        idx = args.data.sample_index(args.batch_size, tp)
+        x = args.data.get_data()[idx]
+        # if args.training_noise > 0.0:
+        #     x += np.random.randn(*x.shape) * args.training_noise
+        x = torch.from_numpy(x).type(torch.float32).to(device)
+        t = np.random.rand()
+        int_t = torch.tensor([itp - t * args.time_scale, itp])
+        int_t = int_t.type(torch.float32).to(device)
+        int_x = model(x, integration_times=int_t)
+        # Calculate distance to 5 closest neighbors
+        # WARNING: This currently fails in the backward pass with cuda on pytorch < 1.4.0
+        #          works on CPU. Fixed in pytorch 1.5.0
+        # RuntimeError: CUDA error: invalid configuration argument
+        # The workaround is to run on cpu on pytorch <= 1.4.0 or upgrade
+        # import pdb; pdb.set_trace()
+        cdist = torch.cdist(int_x, int_x)
+
+        inv_cdist = [(max(cdist[i]) - cdist[i]).detach().numpy() for i in range(len(cdist))]
+        inv_cdist = torch.tensor(inv_cdist)#.dtype(torch.float32)
+        values, indices = torch.topk(cdist, 6, dim=1, largest=True, sorted=False)
+        v = (int_x - x)/(int_t[1] - int_t[0])
+        # inv_cdist[cdist < 0] = 0
+        avg_v = torch.mean(v[indices], axis = 1)
+        pred_x = avg_v *(int_t[1] - int_t[0]) + x
+
+        density_loss = F.mse_loss(int_x, pred_x)
+        # density_loss = torch.abs(torch.mean(F.cosine_similarity(avg_v, v)))
+        print("Density Loss", density_loss.item())
+        losses += density_loss
+
+
+
+    if args.trp_reg:    
+        losses += trp_loss    
+        print("TRP LOSS: ", trp_loss)
 
     # Density regularization
     if args.top_k_reg > 0:
@@ -212,9 +321,15 @@ def compute_loss(device, args, model, growth_model, logger, full_data):
         values -= hinge_value
         values[values < 0] = 0
         density_loss = torch.mean(values)
-        print("Density Loss", density_loss.item())
+        # print("Density Loss", density_loss.item())
         losses += density_loss * args.top_k_reg
     losses += interp_loss
+
+
+
+
+
+
     return losses
 
 
@@ -460,6 +575,9 @@ def main(args):
     model = build_model_tabular(args, args.data.get_shape()[0], regularization_fns).to(
         device
     )
+
+    # import pdb; pdb.set_trace()
+
     growth_model = None
     if args.use_growth:
         if args.leaveout_timepoint == -1:

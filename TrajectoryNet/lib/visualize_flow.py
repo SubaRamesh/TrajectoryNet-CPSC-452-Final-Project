@@ -89,6 +89,7 @@ def plt_flow_density(prior_logdensity, inverse_transform, ax, npts=100, memory=1
 def plt_flow_samples(prior_sample, transform, ax, npts=100, memory=100, title="$x ~ q(x)$", device="cpu"):
     z = prior_sample(npts * npts, 2).type(torch.float32).to(device)
     zk = []
+    # import pdb; pdb.set_trace()
     inds = torch.arange(0, z.shape[0]).to(torch.int64)
     for ii in torch.split(inds, int(memory**2)):
         zk.append(transform(z[ii]))
@@ -147,4 +148,5 @@ def visualize_transform(
 
     ax = plt.subplot(1, 3, 3, aspect="equal")
     if transform is not None:
+        # import pdb; pdb.set_trace()
         plt_flow_samples(prior_sample, transform, ax, npts=npts, memory=memory, device=device)
